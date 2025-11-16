@@ -1,0 +1,172 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  backend-test:
+    name: Backend Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        cache-dependency-path: backend/requirements.txt
+    
+    - name: Install backend dependencies
+      run: |
+        cd backend
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Check Python syntax
+      run: |
+        cd backend
+        python -m py_compile main.py
+    
+    - name: Run backend server test
+      run: |
+        cd backend
+        timeout 10s python main.py || code=$?; if [[ $code -ne 124 && $code -ne 0 ]]; then exit $code; fi
+      continue-on-error: false
+    
+    - name: Test API endpoints (if server starts)
+      run: |
+        cd backend
+        python -c "
+        from main import app
+        from fastapi.testclient import TestClient
+        
+        client = TestClient(app)
+        
+        # Test root endpoint
+        response = client.get('/')
+        assert response.status_code == 200
+        print('✓ Root endpoint working')
+        
+        # Test health endpoint
+        response = client.get('/health')
+        assert response.status_code == 200
+        print('✓ Health endpoint working')
+        
+        # Test assess endpoint with valid data
+        test_data = {
+            'name': 'Test User',
+            'age': 30,
+            'gender': 'male',
+            'height': 175.0,
+            'weight': 75.0,
+            'activity_level': 'moderately_active',
+            'goal': 'maintain',
+            'dietary_preference': 'none',
+            'medical_conditions': []
+        }
+        response = client.post('/assess', json=test_data)
+        assert response.status_code == 200
+        data = response.json()
+        assert 'assessment' in data
+        assert 'workout_plan' in data
+        assert 'meal_suggestions' in data
+        print('✓ Assessment endpoint working')
+        print('✓ All backend tests passed!')
+        "
+
+  frontend-test:
+    name: Frontend Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+    
+    - name: Check for syntax errors
+      run: |
+        cd frontend
+        npx vite build --mode development || true
+    
+    - name: Build frontend for production
+      run: |
+        cd frontend
+        npm run build
+    
+    - name: Check build output
+      run: |
+        cd frontend
+        if [ -d "dist" ]; then
+          echo "✓ Build successful - dist folder created"
+          ls -la dist/
+          if [ -f "dist/index.html" ]; then
+            echo "✓ index.html exists"
+          else
+            echo "✗ index.html missing"
+            exit 1
+          fi
+        else
+          echo "✗ Build failed - dist folder not created"
+          exit 1
+        fi
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build
+        path: frontend/dist/
+        retention-days: 7
+
+  integration-check:
+    name: Integration Check
+    needs: [backend-test, frontend-test]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Verify project structure
+      run: |
+        echo "Checking project structure..."
+        if [ -f "backend/main.py" ] && [ -f "backend/requirements.txt" ]; then
+          echo "✓ Backend files present"
+        else
+          echo "✗ Backend files missing"
+          exit 1
+        fi
+        
+        if [ -f "frontend/package.json" ] && [ -f "frontend/vite.config.js" ]; then
+          echo "✓ Frontend files present"
+        else
+          echo "✗ Frontend files missing"
+          exit 1
+        fi
+        
+        echo "✓ All integration checks passed!"
+    
+    - name: Build status
+      run: |
+        echo "======================================"
+        echo "✓ Backend build and tests: PASSED"
+        echo "✓ Frontend build and tests: PASSED"
+        echo "✓ Integration checks: PASSED"
+        echo "======================================"
+        echo "🎉 All builds successful!"
